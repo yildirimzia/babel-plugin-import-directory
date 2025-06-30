@@ -1,6 +1,6 @@
-import template from '@babel/template'
-import _path from 'path'
-import _fs from 'fs'
+const template = require('@babel/template').default;
+const _path = require('path');
+const _fs = require('fs');
 
 const wildcardRegex = /\/\*$/
 const recursiveRegex = /\/\*\*$/
