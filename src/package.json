@@ -1,0 +1,16 @@
+{
+    "name": "babel-plugin-import-directory",
+    "version": "1.0.0",
+    "description": "A Babel plugin to support importing directories with wildcard syntax.",
+    "main": "src/index.js",
+    "keywords": ["babel-plugin", "import", "directory", "wildcard"],
+    "author": "Ziya Yildirim",
+    "license": "MIT",
+    "dependencies": {
+      "@babel/template": "^7.0.0"
+    },
+    "peerDependencies": {
+      "@babel/core": "^7.0.0"
+    }
+  }
+  
