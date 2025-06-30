@@ -1,149 +1,150 @@
 const template = require('@babel/template').default;
-const _path = require('path');
-const _fs = require('fs');
+const path = require('path');
+const fs = require('fs');
 
-const wildcardRegex = /\/\*$/
-const recursiveRegex = /\/\*\*$/
-const buildRequire = template(`for (let key in IMPORTED) {
-  DIR_IMPORT[key === 'default' ? IMPORTED_NAME : key] = IMPORTED[key]
-}`)
+const wildcardRegex = /\/\*$/;
+const recursiveRegex = /\/\*\*$/;
+
+const buildRequire = template(`
+  for (let key in IMPORTED) {
+    DIR_IMPORT[key === 'default' ? IMPORTED_NAME : key] = IMPORTED[key];
+  }
+`);
 
 const toCamelCase = (name) =>
-  name.replace(/([-_.]\w)/g, (_, $1) => $1[1].toUpperCase())
+  name.replace(/([-_.]\w)/g, (_, $1) => $1[1].toUpperCase());
 
 const toSnakeCase = (name) =>
-  name.replace(/([-.A-Z])/g, (_, $1) => '_' + ($1 === '.' || $1 === '-' ? '' : $1.toLowerCase()))
+  name.replace(/([-.A-Z])/g, (_, $1) => '_' + ($1 === '.' || $1 === '-' ? '' : $1.toLowerCase()));
 
-const getFiles = (parent, exts = ['.js', '.es6', '.es', '.jsx'], files = [], recursive = false, path = []) => {
-  let r = _fs.readdirSync(parent)
+const getFiles = (parent, exts = ['.js', '.es6', '.es', '.jsx'], files = [], recursive = false, currentPath = []) => {
+  const entries = fs.readdirSync(parent);
 
-  console.log(r);
+  for (const entry of entries) {
+    const fullPath = path.join(parent, entry);
+    const { name, ext } = path.parse(entry);
+    const entryPath = currentPath.concat(name);
 
-  for (let i = 0, l = r.length; i < l; i++) {
-    let child = r[i]
-
-    const {name, ext} = _path.parse(child)
-    const file = path.concat(name)
-
-    // Check extension is of one of the aboves
     if (exts.includes(ext)) {
-      files.push(file)
-    } else if (recursive && _fs.statSync(_path.join(parent, child)).isDirectory()) {
-      getFiles(_path.join(parent, name), exts, files, recursive, file)
+      files.push(entryPath);
+    } else if (recursive && fs.statSync(fullPath).isDirectory()) {
+      getFiles(fullPath, exts, files, recursive, entryPath);
     }
   }
 
-  return files
-}
+  return files;
+};
 
-export default function dir (babel) {
-  const { types: t } = babel
+module.exports = function dirImportPlugin(babel) {
+  const { types: t } = babel;
 
   return {
     visitor: {
-      ImportDeclaration (path, state) {
-        const {node} = path
-        let src = node.source.value
+      ImportDeclaration(pathNode, state) {
+        const { node } = pathNode;
+        let src = node.source.value;
 
-        if (src[0] !== '.' && src[0] !== '/') { return }
+        if (src[0] !== '.' && src[0] !== '/') return;
+
         const pathPrefix = src.split('/')[0] + '/';
 
-        const isExplicitWildcard = wildcardRegex.test(src)
-        let cleanedPath = src.replace(wildcardRegex, '')
+        const isExplicitWildcard = wildcardRegex.test(src);
+        let cleanedPath = src.replace(wildcardRegex, '');
 
-        const isRecursive = recursiveRegex.test(cleanedPath)
-        cleanedPath = cleanedPath.replace(recursiveRegex, '')
+        const isRecursive = recursiveRegex.test(cleanedPath);
+        cleanedPath = cleanedPath.replace(recursiveRegex, '');
 
-        const sourcePath = this.file.opts.parserOpts.sourceFileName || this.file.opts.parserOpts.filename || ''
-        const checkPath = _path.resolve(_path.join(_path.dirname(sourcePath), cleanedPath))
+        const sourcePath =
+          state.file.opts.parserOpts.sourceFileName ||
+          state.file.opts.parserOpts.filename ||
+          '';
 
-        try {
-          require.resolve(checkPath)
-
-          return
-        } catch (e) {}
+        const resolvedPath = path.resolve(path.join(path.dirname(sourcePath), cleanedPath));
 
         try {
-          if (!_fs.statSync(checkPath).isDirectory()) { return }
-        } catch (e) { return }
+          require.resolve(resolvedPath);
+          return;
+        } catch (_) {}
 
-        const nameTransform = state.opts.snakeCase ? toSnakeCase : toCamelCase
+        try {
+          if (!fs.statSync(resolvedPath).isDirectory()) return;
+        } catch (_) {
+          return;
+        }
 
-        const _files = getFiles(checkPath, state.opts.exts, [], isRecursive)
-        const files = _files.map((file) =>
-          [file, nameTransform(file[file.length - 1]), path.scope.generateUidIdentifier(file[file.length - 1])]
-        )
+        const nameTransform = state.opts.snakeCase ? toSnakeCase : toCamelCase;
 
-        if (!files.length) { return }
+        const fileList = getFiles(resolvedPath, state.opts.exts, [], isRecursive);
+        const files = fileList.map((file) => {
+          const last = file[file.length - 1];
+          return [file, nameTransform(last), pathNode.scope.generateUidIdentifier(last)];
+        });
 
-        const imports = files.map(([file, fileName, fileUid]) =>
+        if (!files.length) return;
+
+        const imports = files.map(([file, , uid]) =>
           t.importDeclaration(
-            [t.importNamespaceSpecifier(fileUid)],
-            t.stringLiteral(pathPrefix + _path.join(cleanedPath, ...file))
+            [t.importNamespaceSpecifier(uid)],
+            t.stringLiteral(pathPrefix + path.join(cleanedPath, ...file))
           )
-        )
+        );
 
-        let dirVar = path.scope.generateUidIdentifier('dirImport')
-        path.insertBefore(t.variableDeclaration(
-          'const', [
-            t.variableDeclarator(dirVar, t.objectExpression([]))
-          ]
-        ))
+        const dirVar = pathNode.scope.generateUidIdentifier('dirImport');
+        pathNode.insertBefore(
+          t.variableDeclaration('const', [
+            t.variableDeclarator(dirVar, t.objectExpression([])),
+          ])
+        );
 
         for (let i = node.specifiers.length - 1; i >= 0; i--) {
-          let dec = node.specifiers[i]
+          const spec = node.specifiers[i];
 
-          if (t.isImportNamespaceSpecifier(dec) || t.isImportDefaultSpecifier(dec)) {
-            path.insertAfter(t.variableDeclaration(
-              'const', [
-                t.variableDeclarator(
-                  t.identifier(dec.local.name),
-                  dirVar
-                )
-              ]
-            ))
+          if (t.isImportNamespaceSpecifier(spec) || t.isImportDefaultSpecifier(spec)) {
+            pathNode.insertAfter(
+              t.variableDeclaration('const', [
+                t.variableDeclarator(t.identifier(spec.local.name), dirVar),
+              ])
+            );
           }
 
-          if (t.isImportSpecifier(dec)) {
-            path.insertAfter(t.variableDeclaration(
-              'const', [
+          if (t.isImportSpecifier(spec)) {
+            pathNode.insertAfter(
+              t.variableDeclaration('const', [
                 t.variableDeclarator(
-                  t.identifier(dec.local.name),
-                  t.memberExpression(
-                    dirVar,
-                    t.identifier(dec.imported.name)
-                  )
-                )
-              ]
-            ))
+                  t.identifier(spec.local.name),
+                  t.memberExpression(dirVar, t.identifier(spec.imported.name))
+                ),
+              ])
+            );
           }
         }
 
         if (isExplicitWildcard) {
-          files.forEach(([file, fileName, fileUid]) =>
-            path.insertAfter(buildRequire({
-              IMPORTED_NAME: t.stringLiteral(fileName),
-              DIR_IMPORT: dirVar,
-              IMPORTED: fileUid
-            }))
-          )
+          files.forEach(([, name, uid]) => {
+            pathNode.insertAfter(
+              buildRequire({
+                IMPORTED_NAME: t.stringLiteral(name),
+                DIR_IMPORT: dirVar,
+                IMPORTED: uid,
+              })
+            );
+          });
         } else {
-          files.forEach(([file, fileName, fileUid]) =>
-            path.insertAfter(
-              t.assignmentExpression(
-                '=',
-                t.memberExpression(
-                  dirVar,
-                  t.identifier(fileName)
-                ),
-                fileUid
+          files.forEach(([, name, uid]) => {
+            pathNode.insertAfter(
+              t.expressionStatement(
+                t.assignmentExpression(
+                  '=',
+                  t.memberExpression(dirVar, t.identifier(name)),
+                  uid
+                )
               )
-            )
-          )
+            );
+          });
         }
 
-        path.replaceWithMultiple(imports)
-      }
-    }
-  }
-}
+        pathNode.replaceWithMultiple(imports);
+      },
+    },
+  };
+};
